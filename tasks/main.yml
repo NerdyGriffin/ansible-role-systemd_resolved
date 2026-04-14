@@ -1,0 +1,147 @@
+---
+# nerdygriffin.systemd_resolved — main tasks
+#
+# Flow:
+#   1. Detect systemd-resolved state; end host play if not active
+#      (unless force_apply_on_inactive is true).
+#   2. Compute the effective search-domain list (explicit var →
+#      hostvars.network.search_domains → [ansible_domain]).
+#   3. Compute the DNS list, either from systemd_resolved_dns_override or
+#      via VLAN-aware derivation over networks.vlans + the DC inventory
+#      group.
+#   4. Render the drop-in template and deploy it, notifying the handler.
+
+- name: End host play when role is disabled
+  ansible.builtin.meta: end_host
+  when: not (systemd_resolved_manage | bool)
+
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Determine if systemd-resolved is the active resolver
+  ansible.builtin.set_fact:
+    systemd_resolved_active: >-
+      {{ (ansible_facts.services['systemd-resolved.service'].state
+          | default('')) == 'running' }}
+
+- name: Report skip when systemd-resolved is inactive
+  ansible.builtin.debug:
+    msg: >-
+      Skipping systemd-resolved configuration on {{ inventory_hostname }} —
+      service is not active (state={{ ansible_facts.services['systemd-resolved.service'].state | default('absent') }}).
+      Pass systemd_resolved_force_apply_on_inactive=true to override.
+  when:
+    - not systemd_resolved_active
+    - not (systemd_resolved_force_apply_on_inactive | bool)
+
+- name: End host play when systemd-resolved is inactive (default behavior)
+  ansible.builtin.meta: end_host
+  when:
+    - not systemd_resolved_active
+    - not (systemd_resolved_force_apply_on_inactive | bool)
+
+# From here on, systemd-resolved is active (or force_apply is true).
+
+- name: Search domains — explicit role-var override
+  ansible.builtin.set_fact:
+    _sr_search_domains: "{{ systemd_resolved_search_domains }}"
+  when: systemd_resolved_search_domains | length > 0
+
+- name: Search domains — host/group network.search_domains override
+  ansible.builtin.set_fact:
+    _sr_search_domains: "{{ hostvars[inventory_hostname].network.search_domains }}"
+  when:
+    - systemd_resolved_search_domains | length == 0
+    - (hostvars[inventory_hostname].network | default({})).search_domains is defined
+
+- name: Search domains — default to ansible_domain
+  ansible.builtin.set_fact:
+    _sr_search_domains: "{{ [ansible_domain] }}"
+  when:
+    - systemd_resolved_search_domains | length == 0
+    - (hostvars[inventory_hostname].network | default({})).search_domains is not defined
+
+- name: Use explicit DNS override when provided
+  ansible.builtin.set_fact:
+    _sr_dns_list: "{{ systemd_resolved_dns_override }}"
+  when: (systemd_resolved_dns_override | default([]) | length) > 0
+
+- name: Derive DNS list from inventory (VLAN-aware)
+  when: (systemd_resolved_dns_override | default([]) | length) == 0
+  block:
+    - name: Gather candidate VLANs from networks.vlans
+      ansible.builtin.set_fact:
+        _sr_vlans: >-
+          {{ (networks | default({})).vlans | default([])
+             | selectattr('cidr', 'defined') | list }}
+
+    - name: Find host's VLAN by matching ansible_host against each CIDR
+      ansible.builtin.set_fact:
+        _sr_host_vlan: "{{ item }}"
+      loop: "{{ _sr_vlans }}"
+      loop_control:
+        label: "vlan {{ item.id | default('?') }} {{ item.name | default('') }}"
+      when: ansible_host | ansible.utils.ipaddr(item.cidr)
+
+    - name: Collect DC IPs in inventory order
+      ansible.builtin.set_fact:
+        _sr_dc_ips: >-
+          {{ groups[systemd_resolved_dc_group] | default([])
+             | map('extract', hostvars, 'ansible_host')
+             | select('defined') | list }}
+
+    - name: Partition DCs into local (same VLAN) and remote
+      ansible.builtin.set_fact:
+        _sr_local_dcs: >-
+          {{ (_sr_local_dcs | default([]))
+             + ([item] if (item | ansible.utils.ipaddr(_sr_host_vlan.cidr | default('0.0.0.0/32'))) else []) }}
+        _sr_remote_dcs: >-
+          {{ (_sr_remote_dcs | default([]))
+             + ([] if (item | ansible.utils.ipaddr(_sr_host_vlan.cidr | default('0.0.0.0/32'))) else [item]) }}
+      loop: "{{ _sr_dc_ips }}"
+      when: _sr_host_vlan is defined
+
+    - name: Collect remote VLAN gateways that host at least one DC
+      ansible.builtin.set_fact:
+        _sr_remote_vlan_gateways: >-
+          {{ (_sr_remote_vlan_gateways | default([]))
+             + ([item.gateway] if (
+                  item.gateway is defined
+                  and item.cidr != (_sr_host_vlan.cidr | default('0.0.0.0/32'))
+                  and (_sr_dc_ips | map('ansible.utils.ipaddr', item.cidr) | select | list | length > 0)
+             ) else []) }}
+      loop: "{{ _sr_vlans }}"
+      loop_control:
+        label: "vlan {{ item.id | default('?') }} {{ item.name | default('') }}"
+      when: _sr_host_vlan is defined
+
+    - name: Build DNS list when host's VLAN was matched
+      ansible.builtin.set_fact:
+        _sr_dns_list: >-
+          {{ ([_sr_host_vlan.gateway] if (_sr_host_vlan.gateway is defined) else [])
+             + (_sr_remote_vlan_gateways | default([]))
+             + (_sr_local_dcs | default([]))
+             + (_sr_remote_dcs | default([])) }}
+      when: _sr_host_vlan is defined
+
+    - name: Fallback DNS list when host IP matches no known VLAN
+      ansible.builtin.set_fact:
+        _sr_dns_list: "{{ _sr_dc_ips }}"
+      when: _sr_host_vlan is not defined
+
+- name: Ensure drop-in directory exists
+  ansible.builtin.file:
+    path: "{{ systemd_resolved_dropin_dir }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Deploy systemd-resolved drop-in
+  ansible.builtin.template:
+    src: domain-member.conf.j2
+    dest: "{{ systemd_resolved_dropin_dir }}/{{ systemd_resolved_dropin_name }}"
+    mode: "{{ systemd_resolved_dropin_mode }}"
+    owner: root
+    group: root
+  notify: Restart systemd-resolved

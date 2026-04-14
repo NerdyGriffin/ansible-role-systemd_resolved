@@ -1,0 +1,12 @@
+# MANAGED BY ANSIBLE — nerdygriffin.systemd_resolved role
+# Rendered from inventory:
+#   * networks.vlans (in group_vars/all/main.yml) — determines host VLAN + gateway
+#   * groups['{{ systemd_resolved_dc_group }}'] — domain controllers
+# DNS order follows the DnsClientData.psd1 pattern: local-VLAN router first,
+# then same-VLAN DCs, then other-VLAN DCs.
+# Manual edits to this file will be overwritten on the next role run.
+
+[Resolve]
+DNS={{ _sr_dns_list | join(' ') }}
+FallbackDNS={{ systemd_resolved_fallback_dns | join(' ') }}
+Domains={{ _sr_search_domains | join(' ') }}

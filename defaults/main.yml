@@ -1,0 +1,51 @@
+---
+# nerdygriffin.systemd_resolved — role defaults
+# All variables use flat role-prefixed names per Galaxy convention.
+
+# Whether this role does anything at all. Set false to skip on specific hosts.
+systemd_resolved_manage: true
+
+# When true, write the drop-in even if systemd-resolved is not the active
+# resolver (rare — use for hosts where the service is temporarily stopped
+# during recovery but you still want the config updated).
+systemd_resolved_force_apply_on_inactive: false
+
+# Drop-in file metadata.
+# Default name matches the legacy backup filename
+# (/shared/archive/backup/etc/systemd/resolved.conf.d/domain-member.conf.*),
+# so the first role run cleanly overwrites the existing file. systemd-resolved
+# drop-ins are parsed in lexicographic order with later values overriding
+# earlier ones — using the same filename avoids a situation where the legacy
+# file silently wins over a numbered new file.
+systemd_resolved_dropin_name: "domain-member.conf"
+systemd_resolved_dropin_dir: /etc/systemd/resolved.conf.d
+systemd_resolved_dropin_mode: "0644"
+
+# List of search domains for the 'Domains=' key.
+# Empty = role derives from existing hostvars[host].network.search_domains
+# (set in host_vars or group_vars under the network: dict), matching the
+# convention used by the cloud-init regen pipeline. Falls back to
+# [ansible_domain] if no override is found.
+# Precedence at runtime:
+#   1. Explicit systemd_resolved_search_domains (this var, when non-empty)
+#   2. hostvars[inventory_hostname].network.search_domains
+#   3. [ansible_domain]
+systemd_resolved_search_domains: []
+
+# Fallback DNS — last-resort resolvers (FallbackDNS=).
+# Default is Cloudflare; override to use a different public resolver or
+# to include internal fallbacks (e.g., a router's DNS, a local cache).
+systemd_resolved_fallback_dns:
+  - 1.1.1.1
+  - 1.0.0.1
+  - 2606:4700:4700::1111
+  - 2606:4700:4700::1001
+
+# When non-empty, skips the VLAN-aware derivation and uses this DNS list
+# verbatim as the 'DNS=' value. Useful for ad-hoc overrides or hosts with
+# non-standard topology.
+systemd_resolved_dns_override: []
+
+# Inventory group providing the domain controllers. The role extracts each
+# DC's ansible_host and orders them by VLAN membership.
+systemd_resolved_dc_group: domain_controllers

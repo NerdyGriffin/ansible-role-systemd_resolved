@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  author: nerdygriffin
+  description: >-
+    Configure systemd-resolved DNS settings via a drop-in file,
+    with VLAN-aware DC ordering derived from Ansible inventory.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+  galaxy_tags:
+    - dns
+    - systemd
+    - resolved
+    - networking
+    - ad
+
+dependencies: []
