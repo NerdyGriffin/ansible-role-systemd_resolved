@@ -33,10 +33,19 @@ All defaults live in `defaults/main.yml`. Defaults are sensible for most domain-
 | `systemd_resolved_dropin_name` | `"domain-member.conf"` | File name under `/etc/systemd/resolved.conf.d/`. |
 | `systemd_resolved_dropin_dir` | `/etc/systemd/resolved.conf.d` | Drop-in directory. |
 | `systemd_resolved_dropin_mode` | `"0644"` | File mode. |
-| `systemd_resolved_search_domains` | `[]` | `Domains=` override list. Empty = use `hostvars.network.search_domains` if defined, else `[ansible_domain]`. |
+| `systemd_resolved_search_domains` | `[]` | `Domains=` override list. Empty = derive at runtime (see precedence below). |
 | `systemd_resolved_fallback_dns` | `[1.1.1.1, ...]` | `FallbackDNS=` list. |
 | `systemd_resolved_dns_override` | `[]` | If non-empty, skip VLAN derivation and use this list verbatim as `DNS=`. |
 | `systemd_resolved_dc_group` | `domain_controllers` | Inventory group providing the DC list. |
+
+### Search-domain precedence
+
+The role picks the first defined source in this chain (each step **replaces** — no merging, so explicit lists can drop the default or reorder freely):
+
+1. `systemd_resolved_search_domains` — explicit role-var override (when non-empty)
+2. `hostvars[inventory_hostname].network.search_domains` — host/group `network:` dict override
+3. The host's matched VLAN entry in `networks.vlans` → `vlan.search_domains` (matches the cloud-init regen pipeline)
+4. `[ansible_domain]` — last-resort default
 
 ## Inventory expectations
 
