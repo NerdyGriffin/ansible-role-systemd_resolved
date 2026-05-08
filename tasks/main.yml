@@ -8,7 +8,7 @@
 #      and DNS-list derivation).
 #   3. Compute the effective search-domain list:
 #      explicit var → hostvars.network.search_domains →
-#      host_vlan.search_domains → [ansible_domain].
+#      host_vlan.search_domains → [ansible_facts['domain']].
 #   4. Compute the DNS list, either from systemd_resolved_dns_override or
 #      via VLAN-aware derivation over networks.vlans + the DC inventory
 #      group.
@@ -80,9 +80,9 @@
     - _sr_host_vlan is defined
     - _sr_host_vlan.search_domains is defined
 
-- name: Search domains — default to ansible_domain
+- name: Search domains — default to host's gathered domain fact
   ansible.builtin.set_fact:
-    _sr_search_domains: "{{ [ansible_domain] }}"
+    _sr_search_domains: "{{ [ansible_facts['domain']] }}"
   when:
     - systemd_resolved_search_domains | length == 0
     - (hostvars[inventory_hostname].network | default({})).search_domains is not defined

@@ -26,12 +26,12 @@ systemd_resolved_dropin_mode: "0644"
 # the cloud-init regen pipeline
 # (playbooks/cloud_init/tasks/regenerate_single_vm.yml:123-125).
 # Each step below REPLACES the effective list in full — no merging — so
-# explicit entries can drop [ansible_domain] or reorder freely.
+# explicit entries can drop [ansible_facts['domain']] or reorder freely.
 # Precedence at runtime:
 #   1. Explicit systemd_resolved_search_domains (this var, when non-empty)
 #   2. hostvars[inventory_hostname].network.search_domains
 #   3. host's VLAN entry in networks.vlans (vlan.search_domains)
-#   4. [ansible_domain]
+#   4. [ansible_facts['domain']]
 systemd_resolved_search_domains: []
 
 # Fallback DNS — last-resort resolvers (FallbackDNS=).
