@@ -1,0 +1,8 @@
+---
+# Ansible collections this role depends on at runtime.
+# Consumers should install with:
+#   ansible-galaxy collection install -r collections/requirements.yml
+collections:
+  - name: ansible.utils
+    # `ansible.utils.ipaddr` is used in tasks/main.yml to partition DCs by
+    # VLAN membership during search-domain derivation.
