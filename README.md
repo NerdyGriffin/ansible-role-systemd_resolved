@@ -45,7 +45,7 @@ The role picks the first defined source in this chain (each step **replaces** �
 1. `systemd_resolved_search_domains` — explicit role-var override (when non-empty)
 2. `hostvars[inventory_hostname].network.search_domains` — host/group `network:` dict override
 3. The host's matched VLAN entry in `networks.vlans` → `vlan.search_domains` (matches the cloud-init regen pipeline)
-4. `[ansible_domain]` — last-resort default
+4. `[ansible_facts['domain']]` — last-resort default
 
 ## Inventory expectations
 
