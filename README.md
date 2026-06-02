@@ -57,8 +57,8 @@ For the VLAN-aware DNS derivation to work, inventory should have:
      vlans:
        - id: 20
          name: lan
-         cidr: 10.9.20.0/24
-         gateway: 10.9.20.1
+         cidr: 192.0.2.0/24
+         gateway: 192.0.2.1
    ```
 2. A `domain_controllers` group (name configurable via `systemd_resolved_dc_group`) listing each DC as an inventory host with `ansible_host` set to its IP.
 
@@ -77,21 +77,21 @@ If the host's `ansible_host` doesn't match any VLAN's CIDR, the role falls back 
 ### Single-host cutover
 
 ```bash
-ansible-playbook configure_systemd_resolved.yml -l term-8
+ansible-playbook configure_systemd_resolved.yml -l web01
 ```
 
 ### Force apply on a host where the service is temporarily stopped
 
 ```bash
-ansible-playbook configure_systemd_resolved.yml -l hl15-00 \
+ansible-playbook configure_systemd_resolved.yml -l web01 \
   -e systemd_resolved_force_apply_on_inactive=true
 ```
 
 ### Ad-hoc DNS override (skip VLAN logic)
 
 ```bash
-ansible-playbook configure_systemd_resolved.yml -l term-8 \
-  -e '{"systemd_resolved_dns_override":["10.9.20.1","10.9.20.10","10.9.20.16"]}'
+ansible-playbook configure_systemd_resolved.yml -l web01 \
+  -e '{"systemd_resolved_dns_override":["192.0.2.1","192.0.2.10","192.0.2.16"]}'
 ```
 
 ## Verification

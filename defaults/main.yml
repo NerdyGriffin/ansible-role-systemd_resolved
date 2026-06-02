@@ -11,20 +11,17 @@ systemd_resolved_manage: true
 systemd_resolved_force_apply_on_inactive: false
 
 # Drop-in file metadata.
-# Default name matches the legacy backup filename
-# (/shared/archive/backup/etc/systemd/resolved.conf.d/domain-member.conf.*),
-# so the first role run cleanly overwrites the existing file. systemd-resolved
-# drop-ins are parsed in lexicographic order with later values overriding
-# earlier ones — using the same filename avoids a situation where the legacy
-# file silently wins over a numbered new file.
+# Pick a name that matches any pre-existing drop-in you want this role to take
+# over, so the first run cleanly overwrites it. systemd-resolved drop-ins are
+# parsed in lexicographic order with later values overriding earlier ones —
+# reusing the same filename avoids a situation where an older file silently
+# wins over a numbered new file.
 systemd_resolved_dropin_name: "domain-member.conf"
 systemd_resolved_dropin_dir: /etc/systemd/resolved.conf.d
 systemd_resolved_dropin_mode: "0644"
 
 # List of search domains for the 'Domains=' key.
-# Empty = role derives the list at runtime, matching the convention used by
-# the cloud-init regen pipeline
-# (playbooks/cloud_init/tasks/regenerate_single_vm.yml:123-125).
+# Empty = role derives the list at runtime.
 # Each step below REPLACES the effective list in full — no merging — so
 # explicit entries can drop [ansible_facts['domain']] or reorder freely.
 # Precedence at runtime:
