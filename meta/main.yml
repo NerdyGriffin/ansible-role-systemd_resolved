@@ -1,5 +1,7 @@
 ---
 galaxy_info:
+  role_name: systemd_resolved
+  namespace: nerdygriffin
   author: nerdygriffin
   description: >-
     Configure systemd-resolved DNS settings via a drop-in file,
