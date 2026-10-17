@@ -14,15 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the codebase.
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Python 3.
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
       - name: Install test dependencies.
-        run: pip3 install yamllint ansible-lint pytest
+        run: python -m pip install -r requirements-ci.txt
 
       - name: Lint YAML.
         run: yamllint .
@@ -31,9 +31,15 @@ jobs:
         run: pytest
 
       # A rule that fails to import is silently absent rather than an error, so
-      # prove ansible-lint actually loads both of them.
+      # prove ansible-lint actually loads every one of them.
       - name: Verify the rules load.
+        # GitHub's default shell is `bash -e {0}` — pipefail is only added by an
+        # explicit `shell: bash` — so without this a crashing ansible-lint that
+        # still printed a partial list would be masked by tee's exit 0.
         run: |
+          set -o pipefail
           ansible-lint -R -r . -L --nocolor | tee /tmp/rules.txt
           grep -q 'become-first' /tmp/rules.txt
           grep -q 'no-host-os-vars' /tmp/rules.txt
+          grep -q 'reserved-prefix' /tmp/rules.txt
+          grep -q 'builtin-var-placement' /tmp/rules.txt
