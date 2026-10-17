@@ -1,0 +1,336 @@
+"""Custom ansible-lint rule: the `ansible_` prefix is reserved to Ansible.
+
+Convention: the `ansible_` prefix belongs to Ansible, and a vars file is not
+where Ansible's own variables live. So in `group_vars/`, `host_vars/`, a role's
+`defaults/` and `vars/`, or a standalone vars file, a name starting with
+`ansible_` is wrong whichever kind it turns out to be:
+
+* `[builtin]` — it IS one of Ansible's built-ins, so it is misplaced: connection
+  settings belong in the inventory file so a host's reachability is readable in
+  one place.
+* `[lookalike]` — it is NOT a built-in, so the name is misleading: it reads as
+  connection configuration to everyone who meets it. The case this was written
+  for is `ansible_ssh_notify_email`, a notification address, sitting directly
+  beside the genuinely reserved `ansible_ssh_common_args`.
+
+DELIBERATELY A PREFIX TEST
+--------------------------
+Unlike `builtin-var-placement`, this rule matches on the prefix rather than on
+membership of the built-in list, because in a vars file BOTH answers are
+findings. That is what the name says: the prefix is reserved, so a vars file
+may not use it at all. The rule is cheap and obvious, with an obvious remedy.
+
+The built-in list is still consulted, but only to say WHICH of the two problems
+this is, so the message names the right fix — move it, or rename it.
+
+`hosts.yml` and other inventory files are out of scope: `ansible_` names are
+correct there, and the reverse question (a NON-built-in in the inventory file) is
+`builtin-var-placement`'s to answer. The two rules therefore never both fire on
+the same line.
+
+OWNER-PREFIX EXEMPTION
+----------------------
+A role named `ansible_control_node` is supposed to prefix its variables
+`ansible_control_node_*` — the Galaxy flat-role-prefix convention, which
+ansible-lint's own `var-naming[no-role-prefix]` enforces from the other side. So
+a name is exempt when it starts with the name of a role that ACTUALLY EXISTS,
+discovered from Ansible's live `roles_path` rather than guessed from the file's
+own path. See `role_prefixes.py` for why the path heuristic was wrong.
+
+VAULTED VALUES ARE NOT EXEMPT
+-----------------------------
+`ansible_become_password: !vault |` in a vars file is still a built-in in the
+wrong file. Encryption changes what the value IS, not where it belongs: the
+inventory YAML plugin uses the same loader, so an inline `!vault` block moves
+into the inventory file as-is and decrypts there too. Exempting it would open
+exactly the hole the rule closes — any connection secret could sit in
+`group_vars` unseen. The message says so, so the move is obvious to make.
+(A whole-file-encrypted vault is not a mapping at all and never reaches this
+rule; nothing to exempt.)
+
+Not autofix-capable: renaming a variable means updating every reader, and moving
+one between files changes its precedence rank. Neither is a transform this rule
+can see, let alone make safely.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from ansiblelint.errors import MatchError
+from ansiblelint.rules import AnsibleLintRule
+from ansiblelint.skip_utils import get_rule_skips_from_line
+
+try:  # pragma: no cover - import shape differs between rulesdir and package use
+    from ansible_builtin_vars import BUILTIN_ANSIBLE_VARS
+    from role_prefixes import known_role_names, owns_prefix
+except ImportError:  # pragma: no cover
+    sys.path.insert(0, str(Path(__file__).parent))
+    from ansible_builtin_vars import BUILTIN_ANSIBLE_VARS
+    from role_prefixes import known_role_names, owns_prefix
+
+if TYPE_CHECKING:
+    from ansiblelint.file_utils import Lintable
+
+BUILTIN_TAG = "reserved-prefix[builtin]"
+LOOKALIKE_TAG = "reserved-prefix[lookalike]"
+
+
+def _is_vaulted(value: Any) -> bool:
+    """True for a ruamel node tagged `!vault` (an inline-encrypted scalar)."""
+    tag = getattr(value, "tag", None)
+    return tag is not None and str(tag) == "!vault"
+
+
+def find_prefixed_vars(
+    data: Any,
+    role_names: frozenset[str] | set[str] = frozenset(),
+) -> list[tuple[str, int, bool]]:
+    """Return (varname, line, vaulted) for each top-level `ansible_*` key.
+
+    Only TOP-LEVEL keys count. A nested `ansible_user` is a field inside somebody
+    else's data structure, not a variable Ansible resolves under that name.
+
+    Each tuple also says whether the value is `!vault`-encrypted, so the
+    caller can word the remedy — see VAULTED VALUES ARE NOT EXEMPT.
+    """
+    if not isinstance(data, dict):
+        return []
+
+    def line_of(node: Any, key: Any) -> int:
+        lc = getattr(node, "lc", None)
+        if lc is None or not hasattr(lc, "data"):
+            return 0
+        pos = lc.data.get(key)
+        return pos[0] + 1 if pos else 0
+
+    return [
+        (str(key), line_of(data, key), _is_vaulted(data[key]))
+        for key in data
+        if str(key).startswith("ansible_") and not owns_prefix(str(key), role_names)
+    ]
+
+
+class ReservedPrefixRule(AnsibleLintRule):
+    """Vars files must not define ansible_-prefixed variables."""
+
+    id = "reserved-prefix"
+    severity = "MEDIUM"
+    tags = ["idiom"]
+    version_changed = "1.2.0"
+    _ids = {
+        BUILTIN_TAG: "built-in var belongs in the inventory file",
+        LOOKALIKE_TAG: "ansible_-prefixed name is not an Ansible built-in",
+    }
+
+    def matchyaml(self, file: Lintable) -> list[MatchError]:
+        if str(file.kind) != "vars":
+            return []
+
+        from ruamel.yaml import YAML
+        from ruamel.yaml.error import YAMLError
+
+        try:
+            data = YAML(typ="rt").load(file.content)
+        except YAMLError:  # pragma: no cover - malformed YAML is load-failure's job
+            return []
+
+        # cwd is the project root under ansible-lint; used only to find
+        # playbook-adjacent roles/ dirs that roles_path does not cover.
+        role_names = known_role_names(str(Path.cwd()))
+        lines = file.content.splitlines()
+
+        def skipped(lineno: int, tag: str) -> bool:
+            if not 0 < lineno <= len(lines):
+                return False
+            skips = get_rule_skips_from_line(lines[lineno - 1], file, lineno)
+            return bool({self.id, tag}.intersection(skips))
+
+        matches: list[MatchError] = []
+        for name, line, vaulted in find_prefixed_vars(data, role_names):
+            if name in BUILTIN_ANSIBLE_VARS:
+                tag = BUILTIN_TAG
+                message = (
+                    f"'{name}' is one of Ansible's built-in connection variables, "
+                    "so it belongs on the host entry or a group's vars: block in "
+                    "the inventory file, not in a vars file. Keeping them in one "
+                    "file is what makes a host's connection settings readable "
+                    "without resolving group precedence."
+                )
+                if vaulted:
+                    message += (
+                        " The inline !vault block moves as-is: the inventory "
+                        "file is loaded by the same parser and decrypts it too."
+                    )
+            else:
+                tag = LOOKALIKE_TAG
+                message = (
+                    f"'{name}' uses the ansible_ prefix but is not one of "
+                    "Ansible's built-in variables, so it reads as connection "
+                    "configuration when it is not. Rename it — drop the prefix, "
+                    "or use the owning role's name as the prefix."
+                )
+            if not skipped(line, tag):
+                matches.append(
+                    self.create_matcherror(
+                        message,
+                        filename=file,
+                        lineno=line,
+                        tag=tag,
+                    ),
+                )
+        return matches
+
+
+if "pytest" in sys.modules:  # pragma: no cover
+    from ruamel.yaml import YAML
+
+    def _load(text: str) -> Any:
+        return YAML(typ="rt").load(text)
+
+    # --- find_prefixed_vars() ---------------------------------------------
+
+    def test_flags_a_fake_builtin() -> None:
+        data = _load("---\nansible_ssh_notify_email: a@b.net\n")
+        assert find_prefixed_vars(data) == [("ansible_ssh_notify_email", 2, False)]
+
+    def test_flags_a_real_builtin_too() -> None:
+        # The prefix test is the point: a built-in in a vars file is misplaced.
+        assert find_prefixed_vars(_load("---\nansible_user: root\n")) == [
+            ("ansible_user", 2, False),
+        ]
+
+    def test_ignores_unprefixed_names() -> None:
+        assert find_prefixed_vars(_load("---\nemail_recipient: a@b.net\n")) == []
+
+    def test_role_prefix_exemption() -> None:
+        data = _load("---\nansible_control_node_stage: build\n")
+        assert find_prefixed_vars(data, {"ansible_control_node"}) == []
+        assert find_prefixed_vars(data, {"other_role"}) == [
+            ("ansible_control_node_stage", 2, False),
+        ]
+
+    def test_role_exemption_requires_separator() -> None:
+        data = _load("---\nansible_controlnode_x: 1\n")
+        assert find_prefixed_vars(data, {"ansible_control"}) == [
+            ("ansible_controlnode_x", 2, False),
+        ]
+
+    def test_vaulted_value_is_still_flagged() -> None:
+        # Encryption does not change where a built-in belongs.
+        data = _load(
+            "---\nansible_become_password: !vault |\n"
+            "  $ANSIBLE_VAULT;1.1;AES256\n  3961\n",
+        )
+        assert find_prefixed_vars(data) == [("ansible_become_password", 2, True)]
+
+    def test_ignores_nested_keys() -> None:
+        assert find_prefixed_vars(_load("---\ncfg:\n  ansible_bogus: 1\n")) == []
+
+    def test_tolerates_empty_and_non_mapping() -> None:
+        assert find_prefixed_vars(_load("---\n{}\n")) == []
+        assert find_prefixed_vars(_load("---\n- a\n")) == []
+
+    # --- matchyaml() -------------------------------------------------------
+
+    def _lint(tmp_path: Any, rel: str, text: str) -> list[Any]:
+        from ansiblelint.file_utils import Lintable
+
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return ReservedPrefixRule().matchyaml(Lintable(str(path)))
+
+    def test_matchyaml_tags_a_builtin_as_builtin(tmp_path: Any) -> None:
+        matches = _lint(
+            tmp_path,
+            "inventory/group_vars/proxmox/main.yml",
+            "---\nansible_user: root\n",
+        )
+        assert len(matches) == 1
+        assert matches[0].tag == BUILTIN_TAG
+        assert "inventory file" in matches[0].message
+
+    def test_matchyaml_tags_a_non_builtin_as_lookalike(tmp_path: Any) -> None:
+        matches = _lint(
+            tmp_path,
+            "inventory/group_vars/ctl/main.yml",
+            "---\nansible_ssh_notify_email: a@b.net\n",
+        )
+        assert len(matches) == 1
+        assert matches[0].tag == LOOKALIKE_TAG
+        assert "Rename it" in matches[0].message
+
+    def test_matchyaml_honors_noqa(tmp_path: Any) -> None:
+        assert (
+            _lint(
+                tmp_path,
+                "inventory/group_vars/ctl/main.yml",
+                "---\nansible_legacy: 1 # noqa: reserved-prefix\n",
+            )
+            == []
+        )
+
+    def test_matchyaml_exempts_a_role_in_project_root_roles(tmp_path: Any) -> None:
+        """Regression: default roles_path excludes <root>/roles.
+
+        A role's own correctly-prefixed variable was reported as a reserved-prefix lookalike
+        in any repo that had not appended ./roles to roles_path in ansible.cfg.
+        """
+        import os
+
+        from role_prefixes import known_role_names
+
+        (tmp_path / "roles" / "ansible_myapp" / "defaults").mkdir(parents=True)
+        (tmp_path / "roles" / "ansible_myapp" / "defaults" / "main.yml").write_text(
+            "---\nansible_myapp_port: 8080\n",
+        )
+        known_role_names.cache_clear()
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            assert (
+                _lint(
+                    tmp_path,
+                    "roles/ansible_myapp/defaults/main.yml",
+                    "---\nansible_myapp_port: 8080\n",
+                )
+                == []
+            )
+        finally:
+            os.chdir(cwd)
+            known_role_names.cache_clear()
+
+    def test_matchyaml_vaulted_value_gets_move_as_is_hint(tmp_path: Any) -> None:
+        matches = _lint(
+            tmp_path,
+            "inventory/group_vars/g/main.yml",
+            "---\nansible_become_password: !vault |\n"
+            "  $ANSIBLE_VAULT;1.1;AES256\n  3961\n",
+        )
+        assert [m.tag for m in matches] == [BUILTIN_TAG]
+        assert "moves as-is" in matches[0].message
+
+    def test_matchyaml_ignores_whole_file_vault(tmp_path: Any) -> None:
+        # Whole-file encryption is not a mapping, so there is nothing to scan.
+        assert (
+            _lint(
+                tmp_path,
+                "inventory/host_vars/h/vault.yml",
+                "$ANSIBLE_VAULT;1.1;AES256\n3961\n",
+            )
+            == []
+        )
+
+    def test_matchyaml_skips_inventory_files(tmp_path: Any) -> None:
+        # hosts.yml is out of scope: ansible_ names are correct there.
+        from ansiblelint.file_utils import Lintable
+
+        path = tmp_path / "inventory" / "hosts.yml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("all:\n  hosts:\n    h:\n      ansible_host: 10.0.0.1\n")
+        lintable = Lintable(str(path))
+        assert str(lintable.kind) != "vars"
+        assert ReservedPrefixRule().matchyaml(lintable) == []
