@@ -57,7 +57,10 @@
   loop: "{{ _sr_vlans }}"
   loop_control:
     label: "vlan {{ item.id | default('?') }} {{ item.name | default('') }}"
-  when: ansible_host | ansible.utils.ipaddr(item.cidr)
+  # `ipaddr(cidr)` returns the address when it is inside the network and
+  # False/None when it is not. ansible-core 2.19+ rejects a conditional whose
+  # result is a string, so test truthiness explicitly.
+  when: ansible_host | ansible.utils.ipaddr(item.cidr) is truthy
 
 - name: Search domains — explicit role-var override
   ansible.builtin.set_fact:
